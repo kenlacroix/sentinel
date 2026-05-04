@@ -120,6 +120,96 @@ command needed to reproduce.
 The fuzzer exits non-zero when it produces any High or Critical finding, so
 CI can gate on `sentinel-fuzzer run` directly.
 
+## Analyzing your Tauri source
+
+The analyzer is a Tauri-aware static security scanner. It does **not** try to
+be a generic secret scanner — for that, install
+[gitleaks](https://github.com/gitleaks/gitleaks) or
+[trufflehog](https://github.com/trufflesecurity/trufflehog), which ship 5000+
+tuned patterns and live verifier callbacks.
+
+Sentinel focuses on patterns no generic tool catches well: command-injection
+sinks reachable from `#[tauri::command]` handlers, path-traversal sinks,
+`eval()` in webview code, `dangerouslySetInnerHTML` over IPC data,
+`unsafe` blocks inside command handlers, weak crypto, plain HTTP, and CSP
+weaknesses.
+
+### Run the analyzer
+
+```bash
+sentinel-analyzer /path/to/your/tauri/project
+```
+
+Output formats:
+
+```bash
+sentinel-analyzer ./project --format text      # default; pretty terminal
+sentinel-analyzer ./project --format json -o report.json
+sentinel-analyzer ./project --format html -o report.html
+```
+
+The HTML report is fully self-contained (embedded CSS, no remote assets) so
+it opens cleanly from email, S3, CI artifact viewers, or airgapped envs.
+
+### What you'll see
+
+| Severity | Examples |
+| --- | --- |
+| Critical | `tauri.command_injection` — a `#[tauri::command]` argument flows into `Command::new(...)` |
+| High     | `tauri.path_traversal`, `webview.eval`, `webview.dangerously_set_inner_html`, `tauri.csp_unsafe_eval` |
+| Medium   | `crypto.weak_hash`, `network.http_in_fetch`, `tauri.unsafe_in_command` |
+
+The analyzer exits non-zero when any High or Critical finding appears, so
+`sentinel-analyzer ./project` works directly as a CI gate.
+
+### Suppressing false positives
+
+Inline comments turn off matches with surgical precision:
+
+```rust
+let h = Md5::new();  // sentinel:ignore-rule:crypto.weak_hash
+```
+
+Forms accepted:
+
+```text
+// sentinel:ignore                       — silence ALL rules on this line
+// sentinel:ignore-next-line             — silence ALL rules on the next line
+// sentinel:ignore-rule:webview.eval     — silence one rule on this line
+// sentinel:ignore-rule:a.b,c.d          — silence multiple rules
+```
+
+Block-comment forms (`/* sentinel:ignore */`) work too.
+
+For path-level exclusions, drop a `.sentinelignore` at the project root.
+Same shape as `.gitignore`:
+
+```text
+# project root
+src/legacy/
+*.bak
+**/generated/*
+```
+
+### Custom rules
+
+Pass `--rules path/to/rules.toml` to extend or override the built-in
+pattern library:
+
+```toml
+[[patterns]]
+id = "myorg.no_panic_in_command"
+kind = "regex"
+title = "panic!() inside a Tauri command body"
+description = "We disallow panics in command handlers — they crash the webview."
+severity = "high"
+suggestion = "Return Result<T, MyError> instead and let the frontend surface the error."
+extensions = ["rs"]
+regex = '''panic!\s*\('''
+```
+
+User rules with the same id as a built-in win, with a warning logged.
+
 ## Environment variables
 
 - `SENTINEL_HOME` — override the cache root (default `~/.sentinel`)
@@ -140,3 +230,11 @@ CI can gate on `sentinel-fuzzer run` directly.
 - **"fuzz target X not found"** — Sentinel only sees files under
   `fuzz/fuzz_targets/`. Run `sentinel-fuzzer list-targets <project>` to see
   what it discovered.
+- **Analyzer reports a finding inside a comment** — block comments
+  (`/* ... */`) spanning multiple lines aren't always recognised by the
+  regex pass. Use `// sentinel:ignore-rule:<id>` on the line, or rephrase
+  the comment so it doesn't include a literal `eval(` / `Command::new(`
+  / etc.
+- **Analyzer misses a real bug behind a helper function** — Sentinel's
+  dataflow tracer is bounded to single-function scope by design.
+  Cross-function flow lands in the `analyzer.tree-sitter` deferred TODO.

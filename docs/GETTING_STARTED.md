@@ -1,7 +1,7 @@
 # Getting started with Sentinel
 
-This guide walks through installing Sentinel from source and running your
-first cartographer scan.
+This guide walks through installing Sentinel from source, running your first
+cartographer scan, and wiring up a fuzz target for the IPC fuzzer.
 
 ## Prerequisites
 
@@ -59,6 +59,67 @@ informational finding. If your project disables CSP it adds a `high`-severity
 `cartographer.cve.RUSTSEC-NNNN-NNNN` finding, severity inferred from the
 advisory's CVSS string (defaulting to `high` when absent).
 
+## Fuzzing your Tauri commands
+
+Sentinel's fuzzer is a thin wrapper over [`cargo-fuzz`](https://rust-fuzz.github.io/book/cargo-fuzz.html)
+that targets `#[tauri::command]` handlers via [`tauri::test::mock_builder()`](https://docs.rs/tauri/latest/tauri/test/index.html).
+You write one fuzz target per command you want fuzzed; Sentinel handles
+discovery, the run, crash classification, and reporting.
+
+### One-time toolchain setup
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz
+sentinel-fuzzer doctor   # confirms both are wired up
+```
+
+### Wire up your first fuzz target
+
+From the root of your Tauri project:
+
+```bash
+cargo +nightly fuzz init   # creates fuzz/ subcrate with cargo-fuzz scaffolding
+cargo +nightly fuzz add store_mood   # creates fuzz/fuzz_targets/store_mood.rs
+```
+
+Replace the generated `fuzz_targets/store_mood.rs` with the Sentinel template
+at `crates/sentinel-fuzzer/templates/fuzz_target.rs.tmpl`, and adapt the
+`<COMMAND>` and `FuzzInput` fields to match your real command and its arg
+types. The template uses `tauri::test::mock_builder()` plus a `#[derive(Arbitrary)]`
+input type, so libFuzzer produces structured inputs that pass through serde
+deserialization and reach your handler logic.
+
+In `fuzz/Cargo.toml` make sure `tauri` has the `test` feature enabled:
+
+```toml
+tauri = { version = "2", features = ["test"] }
+```
+
+### Run the fuzzer
+
+```bash
+sentinel-fuzzer run /path/to/project --target store_mood --duration 60
+```
+
+Pass `--format json` for a machine-readable report, `--seed N` for
+reproducible runs, and `--list-targets` (as a separate subcommand) to
+enumerate everything Sentinel found in `fuzz/fuzz_targets/`.
+
+### What you'll see
+
+A clean run prints `Clean run — no crashes detected.` and exits 0.
+
+A run that finds a panic produces a `fuzzer.crash.panic.<hash>` finding with
+severity **High** — panics in IPC handlers are reachable by anything that
+can talk to the webview, which makes them at minimum a remote DoS.
+Sanitizer reports become **Critical**, OOM and timeout become **Medium**.
+The finding's description includes the exact `cargo +nightly fuzz run`
+command needed to reproduce.
+
+The fuzzer exits non-zero when it produces any High or Critical finding, so
+CI can gate on `sentinel-fuzzer run` directly.
+
 ## Environment variables
 
 - `SENTINEL_HOME` — override the cache root (default `~/.sentinel`)
@@ -72,3 +133,10 @@ advisory's CVSS string (defaulting to `high` when absent).
   cache, or pass `--no-advisories` if you don't need CVE matching.
 - **"no Cargo.toml found"** — the cartographer searches up to 6 levels deep
   from the supplied path. Point it at the workspace root, not a subdirectory.
+- **"cargo-fuzz is not installed"** — run `sentinel-fuzzer doctor`. It will
+  print install commands for both `cargo-fuzz` and the nightly toolchain.
+- **"no fuzz/ subcrate"** — run `cargo +nightly fuzz init` from the project
+  root before invoking `sentinel-fuzzer run`.
+- **"fuzz target X not found"** — Sentinel only sees files under
+  `fuzz/fuzz_targets/`. Run `sentinel-fuzzer list-targets <project>` to see
+  what it discovered.

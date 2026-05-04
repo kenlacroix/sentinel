@@ -101,7 +101,7 @@ pub fn parse_project(root: &Path) -> Result<ParsedProject> {
         .max_depth(MAX_SCAN_DEPTH)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e.path()))
+        .filter_entry(|e| !sentinel_core::scan::is_ignored_path(e.path()))
         .flatten()
     {
         if !entry.file_type().is_file() {
@@ -343,23 +343,6 @@ pub fn parse_tauri_conf(raw: &str) -> Result<TauriManifest> {
         csp_disabled,
         allowlist,
     })
-}
-
-fn is_ignored(path: &Path) -> bool {
-    const SKIP: &[&str] = &[
-        "target",
-        "node_modules",
-        ".git",
-        "dist",
-        "build",
-        ".next",
-        ".svelte-kit",
-        "out",
-        ".DS_Store",
-    ];
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .is_some_and(|n| SKIP.contains(&n))
 }
 
 fn relativize(root: &Path, path: &Path) -> PathBuf {

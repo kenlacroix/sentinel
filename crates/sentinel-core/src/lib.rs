@@ -15,6 +15,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 pub mod io;
+pub mod scan;
 
 /// Severity rating for a security finding, ordered from least to most severe.
 ///

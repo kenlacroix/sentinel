@@ -1094,12 +1094,15 @@ name = "sentinel-analyzer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "regex",
  "sentinel-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "walkdir",

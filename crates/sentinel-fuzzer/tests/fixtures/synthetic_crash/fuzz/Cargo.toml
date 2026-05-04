@@ -1,0 +1,18 @@
+# Skeleton fuzz subcrate. Sentinel's integration test only inspects the
+# directory layout — it never invokes cargo on this manifest.
+[package]
+name = "synthetic-crash-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[[bin]]
+name = "store_mood"
+path = "fuzz_targets/store_mood.rs"
+test = false
+doc = false
+
+[dependencies]
+# In a real project these would be:
+#   libfuzzer-sys = "0.4"
+#   arbitrary     = { version = "1", features = ["derive"] }

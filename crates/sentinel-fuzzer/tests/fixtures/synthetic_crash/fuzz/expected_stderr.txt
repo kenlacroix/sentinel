@@ -1,0 +1,25 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1701974830
+INFO: Loaded 1 modules   (16384 inline 8-bit counters): 16384 [0x55a7b4321000, 0x55a7b4325000),
+INFO: Loaded 1 PC tables (16384 PCs): 16384 [0x55a7b4325000,0x55a7b4365000),
+INFO: -max_total_time=60
+INFO: A corpus is not provided, starting from an empty corpus
+#2	INITED cov: 12 ft: 12 corp: 1/1b exec/s: 0 rss: 35Mb
+#3	NEW    cov: 13 ft: 13 corp: 2/5b lim: 4 exec/s: 0 rss: 35Mb L: 4/4 MS: 1 InsertByte-
+==54321==ERROR: libFuzzer: deadly signal
+    #0 0x55a7b4123abc in __sanitizer_print_stack_trace (/path/to/store_mood+0x123abc)
+    #1 0x55a7b40fdef0 in fuzzer::PrintStackTrace() (/path/to/store_mood+0xfdef0)
+    #2 0x55a7b40e3210 in fuzzer::Fuzzer::CrashCallback() (/path/to/store_mood+0xe3210)
+    #3 0x55a7b41a5678 in core::panicking::panic_fmt::h0123456789abcdef (/path/to/store_mood+0x1a5678)
+    #4 0x55a7b41cabcd in store_mood::run::h1f2e3d4c5b6a7890 at fuzz_targets/store_mood.rs:18:9
+    #5 0x55a7b41dabcd in rust_fuzzer_test_input (/path/to/store_mood+0x1dabcd)
+    #6 0x55a7b40f1234 in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long) (/path/to/store_mood+0xf1234)
+thread 'main' panicked at 'synthetic panic for sentinel integration test', fuzz_targets/store_mood.rs:18:9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+==54321== ERROR: libFuzzer: deadly signal
+SUMMARY: libFuzzer: deadly signal
+MS: 0 ; base unit: 0000000000000000000000000000000000000000
+0x42,0x4f,0x4f,0x4d,
+BOOM
+artifact_prefix='./'; Test unit written to ./crash-c0ffee123456789abcdef0123456789abcdef01
+Base64: Qk9PTQ==

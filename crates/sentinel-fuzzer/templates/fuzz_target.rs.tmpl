@@ -1,0 +1,64 @@
+// Sentinel fuzz target template.
+//
+// Copy this file to `<your-project>/fuzz/fuzz_targets/<command>.rs` and adapt
+// the `<COMMAND>` / `<ARGS>` placeholders to match the Tauri command you
+// want to fuzz.
+//
+// Prerequisites in the user's `<your-project>/fuzz/Cargo.toml`:
+//
+//   [dependencies]
+//   libfuzzer-sys = "0.4"
+//   arbitrary    = { version = "1", features = ["derive"] }
+//   serde        = { version = "1", features = ["derive"] }
+//   serde_json   = "1"
+//   tauri        = { version = "2", features = ["test"] }
+//   <your-app-crate> = { path = ".." }
+//
+// And the user's main `<your-app-crate>` should expose its `#[tauri::command]`
+// functions so this target can name them in `generate_handler!`.
+
+#![no_main]
+
+use arbitrary::Arbitrary;
+use libfuzzer_sys::fuzz_target;
+use serde::Serialize;
+use tauri::test::{mock_builder, MockRuntime};
+use tauri::{generate_handler, Manager};
+
+// 1. Define the input shape your command takes. This must derive Arbitrary
+//    so libFuzzer can produce structured inputs that pass through serde
+//    deserialization and reach your handler logic.
+#[derive(Debug, Clone, Arbitrary, Serialize)]
+struct FuzzInput {
+    // Replace these fields with the actual argument types of your command.
+    payload: String,
+    count: u32,
+}
+
+fuzz_target!(|input: FuzzInput| {
+    // 2. Build a fresh mock Tauri app. For real performance, hoist this into
+    //    a `OnceLock<Mutex<App<MockRuntime>>>` and reuse — building the mock
+    //    every iteration drops throughput by 100x.
+    let app = mock_builder()
+        .invoke_handler(generate_handler![<COMMAND>])
+        .build(tauri::generate_context!())
+        .expect("failed to build mock Tauri app");
+
+    // 3. Serialize the structured input to the JSON shape the IPC bridge
+    //    expects, then drive the command.
+    let payload = serde_json::to_value(&input).expect("input is always serializable");
+    let webview = app.get_webview_window("main").expect("main webview");
+
+    let _ = tauri::test::get_ipc_response(
+        &webview,
+        tauri::webview::InvokeRequest {
+            cmd: "<COMMAND>".to_string(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(payload),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        },
+    );
+});

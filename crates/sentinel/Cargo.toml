@@ -1,0 +1,33 @@
+[package]
+name = "sentinel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified CLI for the Sentinel security auditor — runs cartographer + analyzer + fuzzer and produces a merged report."
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"
+
+[lib]
+name = "sentinel_cli"
+path = "src/lib.rs"
+
+[dependencies]
+sentinel-core = { path = "../sentinel-core" }
+sentinel-cartographer = { path = "../sentinel-cartographer" }
+sentinel-analyzer = { path = "../sentinel-analyzer" }
+sentinel-fuzzer = { path = "../sentinel-fuzzer" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

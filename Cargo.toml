@@ -4,6 +4,7 @@ members = [
     "crates/sentinel-cartographer",
     "crates/sentinel-fuzzer",
     "crates/sentinel-analyzer",
+    "crates/sentinel",
 ]
 resolver = "2"
 

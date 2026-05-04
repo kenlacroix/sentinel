@@ -92,3 +92,108 @@ show up as an incident report and we'll wish we'd shipped it earlier.
 
 **Depends on / blocked by:** Week 3 fuzzer MVP. Independent of the other
 two TODOs.
+
+## analyzer.tree-sitter
+
+**What:** Replace the regex-based pattern matcher with tree-sitter AST
+queries. Unlocks cross-function dataflow (helper functions, call graphs),
+struct field tracking, macro-expansion-aware matching, and pattern
+specificity that regex can't express ("an `Arc<Mutex<T>>` whose inner
+type is a sensitive struct").
+
+**Why:** The Week 4 MVP intentionally limits dataflow to single-function
+scope because that's where regex actually works. The hard part of
+real-world taint analysis (a `#[tauri::command]` argument flowing through
+three helpers and ending up in `Command::new`) is the part regex can't
+do. Tree-sitter is the standard answer (semgrep uses it, github code
+scanning uses it).
+
+**Pros:**
+- Catches the bugs regex can't: cross-function flow, struct field access,
+  pattern specificity over types not just identifiers.
+- Compounds with `fuzzer.auto-discovery` — that work also wants AST
+  introspection of `#[tauri::command]` annotations.
+- `tree-sitter-rust` and `tree-sitter-typescript` are mature crates
+  with stable grammars; integration is incremental, not a rewrite.
+
+**Cons:**
+- Significantly more engineering than regex (~1-2 weeks).
+- Each language grammar is its own parser to vendor + version-pin.
+- Performance characteristics differ (regex is O(n) per pattern, AST
+  walk is O(file size) with constant factor).
+
+**Context:** Week 4 ships regex with single-function dataflow scope. The
+bullet-point promise of "cross-function taint tracing" is deferred here.
+Phase 2 of the master roadmap is the right home; pairs naturally with
+the SaaS pivot (cloud fuzzing infra has the compute budget for AST work
+that local regex doesn't need).
+
+**Depends on / blocked by:** Week 4 analyzer MVP. Strong synergy with
+`fuzzer.auto-discovery` — implementing one makes the other cheaper.
+
+## analyzer.gitleaks-shim
+
+**What:** Optional integration that detects an installed `gitleaks` (or
+`trufflehog`), invokes it under the hood with project-appropriate config,
+and merges its findings into the unified Sentinel report after format
+conversion + dedup.
+
+**Why:** Sentinel's value is Tauri-specific findings — generic secret
+detection is a solved problem owned by gitleaks/trufflehog. Rather than
+compete on coverage, integrate. Users get one-pane-of-glass: Tauri
+findings from Sentinel + battle-tested generic findings from upstream.
+
+**Pros:**
+- Zero maintenance burden on the Sentinel pattern library for generic
+  secrets — gitleaks ships ~5000 patterns, kept current upstream.
+- TruffleHog's verifier callbacks (live key validation) are uniquely
+  valuable and impossible to replicate in regex alone.
+- Plays well with security teams already running gitleaks in CI.
+
+**Cons:**
+- Adds an external runtime dependency check + invocation surface.
+- Format conversion (gitleaks JSON → Sentinel `Finding`) is fiddly.
+- User-controlled config path conflicts (a `.gitleaksignore` may want
+  to extend Sentinel's `.sentinelignore`, or vice versa).
+
+**Context:** Week 4 ships a small built-in default for the obvious cases
+(hardcoded keys with high entropy + ignore-comment respect). The "deep
+coverage" story for users with serious secret-detection needs is to
+install gitleaks separately, today. This TODO is the upgrade path that
+makes that integration ergonomic.
+
+**Depends on / blocked by:** Week 4 analyzer MVP. Independent of
+`analyzer.tree-sitter`.
+
+## analyzer.sarif-output
+
+**What:** Emit Sentinel findings in [SARIF](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+format so the unified report can be consumed by GitHub Code Scanning,
+GitLab Vulnerability Reports, and any other CI surface that ingests
+SARIF.
+
+**Why:** SARIF is the lingua franca for static-analysis output in 2026.
+A SARIF emitter turns Sentinel from "a CLI you run manually" into "a
+GitHub Action you `uses:` in your workflow." The deferred GitHub Action
+TODO (master roadmap Phase 2) is the natural consumer.
+
+**Pros:**
+- One format = many CI integrations: GitHub Advanced Security, GitLab
+  SAST, Sonatype, JetBrains, etc. — all consume SARIF.
+- Findings show up inline on PRs as code-line annotations, dramatically
+  improving DX over "go read this JSON file."
+- Standardizes on a public format instead of Sentinel-proprietary JSON
+  for tools that want to integrate.
+
+**Cons:**
+- SARIF schema is verbose; emitter is ~300 lines of mapping logic.
+- Some Sentinel finding fields (`suggestion`, multi-line `description`)
+  don't map cleanly to SARIF concepts; lossy in either direction.
+
+**Context:** Week 4 ships JSON + HTML. SARIF is the third format that
+unlocks CI ecosystem integration, but it's not on the critical path for
+Week 5 MoodBloom dogfooding or the Week 8 launch. Right time is when
+the GitHub Action TODO comes due.
+
+**Depends on / blocked by:** Master roadmap Phase 2 (GitHub Action
+integration). Independent of the other analyzer TODOs.

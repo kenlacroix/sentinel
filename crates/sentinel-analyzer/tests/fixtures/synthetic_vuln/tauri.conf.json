@@ -1,0 +1,9 @@
+{
+    "productName": "synthetic-vuln",
+    "version": "0.0.0",
+    "app": {
+        "security": {
+            "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'"
+        }
+    }
+}

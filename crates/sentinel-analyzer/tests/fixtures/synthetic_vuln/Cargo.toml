@@ -1,0 +1,7 @@
+# Skeleton manifest. Sentinel only reads source files under this tree;
+# nothing here ever gets compiled by Cargo.
+[package]
+name = "synthetic-vuln"
+version = "0.0.0"
+edition = "2021"
+publish = false

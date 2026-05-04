@@ -1,0 +1,17 @@
+target/
+**/*.rs.bk
+*.pdb
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.log
+reports/
+node_modules/
+dist/
+build/

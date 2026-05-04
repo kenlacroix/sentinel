@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/sentinel-core",
+    "crates/sentinel-cartographer",
+    "crates/sentinel-fuzzer",
+    "crates/sentinel-analyzer",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Ken <contact@kennethlacroix.me>"]
+license = "MIT"
+repository = "https://github.com/kenlacroix/sentinel"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tokio = { version = "1.38", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.4", features = ["derive"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1.10"
+walkdir = "2.4"
+rand = "0.8"
+tempfile = "3.8"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+semver = "1.0"
+dirs = "5.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

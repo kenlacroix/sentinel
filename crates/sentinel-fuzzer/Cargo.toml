@@ -1,0 +1,28 @@
+[package]
+name = "sentinel-fuzzer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "IPC behavioral fuzzer for Tauri command handlers."
+
+[[bin]]
+name = "sentinel-fuzzer"
+path = "src/main.rs"
+
+[lib]
+name = "sentinel_fuzzer"
+path = "src/lib.rs"
+
+[dependencies]
+sentinel-core = { path = "../sentinel-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
+tempfile = { workspace = true }

@@ -168,20 +168,51 @@ impl AdvisoryStore {
             if !entry.file_type().is_file() {
                 continue;
             }
-            if entry.path().extension().and_then(|e| e.to_str()) != Some("toml") {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            // Real RustSec advisories all start with `RUSTSEC-`. This filter
+            // skips db-internal files like EXAMPLE_ADVISORY.md, support.toml,
+            // and HOWTO_*.md that share the directory.
+            if !stem.starts_with("RUSTSEC-") {
                 continue;
             }
-            let raw = match std::fs::read_to_string(entry.path()) {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "toml" && ext != "md" {
+                continue;
+            }
+            let raw = match std::fs::read_to_string(path) {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!(path = %entry.path().display(), error = %e, "skip unreadable advisory");
+                    tracing::warn!(path = %path.display(), error = %e, "skip unreadable advisory");
                     continue;
                 }
             };
-            match parse_rustsec_toml(&raw) {
-                Ok(adv) => store.insert(adv),
+            // Markdown advisories embed the TOML metadata in a fenced
+            // ```toml ... ``` block at the top of the file. The actual
+            // title lives as the first H1 heading after the fence.
+            let (toml_src, md_title) = if ext == "md" {
+                let Some(toml) = extract_toml_block(&raw) else {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "skip advisory with no toml fenced block"
+                    );
+                    continue;
+                };
+                (toml, extract_first_h1(&raw))
+            } else {
+                (raw.clone(), None)
+            };
+            match parse_rustsec_toml(&toml_src) {
+                Ok(mut adv) => {
+                    if let Some(t) = md_title {
+                        adv.title = t;
+                    }
+                    store.insert(adv);
+                }
                 Err(e) => tracing::warn!(
-                    path = %entry.path().display(),
+                    path = %path.display(),
                     error = %e,
                     "skip unparseable advisory"
                 ),
@@ -189,6 +220,46 @@ impl AdvisoryStore {
         }
         Ok(store)
     }
+}
+
+/// Extract the contents of the first ```` ```toml ```` fenced block in a
+/// markdown advisory. `RustSec` stores its metadata that way as of 2024+ —
+/// the `.md` file is markdown prose with the structured TOML header at
+/// the top, between fence markers.
+fn extract_toml_block(raw: &str) -> Option<String> {
+    // Find the opening fence.
+    let after_open = raw
+        .find("```toml")
+        .map(|i| i + "```toml".len())
+        .or_else(|| raw.find("```TOML").map(|i| i + "```TOML".len()))?;
+    let rest = &raw[after_open..];
+    // Skip the optional newline after the fence opener.
+    let body_start = rest.find('\n').map_or(0, |n| n + 1);
+    let body = &rest[body_start..];
+    let close = body.find("```")?;
+    Some(body[..close].to_string())
+}
+
+/// Extract the first markdown `# Heading` line as a title.
+///
+/// Looks past any leading TOML fenced block. Skips lines that begin with
+/// more than one `#` (those are subheadings, not the document title).
+fn extract_first_h1(raw: &str) -> Option<String> {
+    let after_fence = raw
+        .find("```toml")
+        .or_else(|| raw.find("```TOML"))
+        .and_then(|start| raw[start + 7..].find("```").map(|c| start + 7 + c + 3))
+        .unwrap_or(0);
+    for line in raw[after_fence..].lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            let title = rest.trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// HTTP client that downloads and unpacks the `RustSec` advisory database.
@@ -354,11 +425,14 @@ pub fn parse_rustsec_toml(raw: &str) -> Result<Advisory> {
         .and_then(Value::as_str)
         .context("missing advisory.package")?
         .to_string();
+    // RustSec advisories store the title as a markdown `#` heading in the
+    // body, not in the TOML metadata. The parser tolerates a missing title
+    // and falls back to the advisory id; `load_from_dir` overrides this
+    // with the markdown heading when it has one.
     let title = advisory
         .get("title")
         .and_then(Value::as_str)
-        .context("missing advisory.title")?
-        .to_string();
+        .map_or_else(|| id.clone(), str::to_string);
     let description = advisory
         .get("description")
         .and_then(Value::as_str)
@@ -505,6 +579,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_rustsec_toml_falls_back_to_id_when_title_missing() {
+        let raw = r#"
+            [advisory]
+            id = "RUSTSEC-2025-0004"
+            package = "openssl"
+
+            [versions]
+            patched = [">= 0.10.70"]
+        "#;
+        let adv = parse_rustsec_toml(raw).unwrap();
+        assert_eq!(adv.title, "RUSTSEC-2025-0004");
+    }
+
+    #[test]
+    fn extract_first_h1_finds_title_after_toml_fence() {
+        let md = "```toml\n[advisory]\nid = \"X\"\npackage = \"y\"\n```\n\n# Real title here\n\nBody text.\n";
+        assert_eq!(extract_first_h1(md).as_deref(), Some("Real title here"));
+    }
+
+    #[test]
+    fn extract_first_h1_skips_subheadings_and_returns_none_if_absent() {
+        assert_eq!(extract_first_h1("body with no heading"), None);
+        // Subheading shouldn't match before the H1.
+        let md = r"```toml
+x = 1
+```
+## Subheading first
+# Real title
+";
+        assert_eq!(extract_first_h1(md).as_deref(), Some("Real title"));
+    }
+
+    #[test]
     fn load_from_dir_recursively_collects_advisories() {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("crates").join("demo");
@@ -521,13 +628,75 @@ mod tests {
             "#,
         )
         .unwrap();
-        // Junk file should be skipped without error.
+        // Junk files should be skipped without error.
         std::fs::write(nested.join("README.md"), "ignore me").unwrap();
-        std::fs::write(nested.join("bad.toml"), "this is not advisory toml").unwrap();
+        std::fs::write(nested.join("EXAMPLE_ADVISORY.md"), "ignore").unwrap();
+        std::fs::write(nested.join("support.toml"), "irrelevant = true").unwrap();
+        // Real-shape filename but bad TOML: should warn-and-skip, not panic.
+        std::fs::write(
+            nested.join("RUSTSEC-2024-9999.toml"),
+            "this is not advisory toml",
+        )
+        .unwrap();
 
         let store = AdvisoryStore::load_from_dir(tmp.path()).unwrap();
         assert_eq!(store.len(), 1);
         assert_eq!(store.matches("demo", "0.9.0").len(), 1);
+    }
+
+    #[test]
+    fn load_from_dir_parses_modern_markdown_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("crates").join("openssl");
+        std::fs::create_dir_all(&nested).unwrap();
+        // RustSec's modern format: TOML metadata fenced inside markdown,
+        // with the human-readable title in the markdown body — NOT the TOML.
+        std::fs::write(
+            nested.join("RUSTSEC-2025-0004.md"),
+            r#"```toml
+[advisory]
+id = "RUSTSEC-2025-0004"
+package = "openssl"
+aliases = ["CVE-2025-24898"]
+
+[versions]
+patched = [">= 0.10.70"]
+```
+
+# ssl::select_next_proto use after free
+
+Long-form prose follows here, which the parser must ignore.
+"#,
+        )
+        .unwrap();
+
+        let store = AdvisoryStore::load_from_dir(tmp.path()).unwrap();
+        assert_eq!(store.len(), 1, "should parse the markdown advisory");
+        let matches = store.matches("openssl", "0.10.50");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, "RUSTSEC-2025-0004");
+        assert!(matches[0].aliases.iter().any(|a| a == "CVE-2025-24898"));
+        assert_eq!(
+            matches[0].title, "ssl::select_next_proto use after free",
+            "title should come from the markdown H1"
+        );
+    }
+
+    #[test]
+    fn extract_toml_block_handles_lowercase_and_uppercase_fence() {
+        assert_eq!(
+            extract_toml_block("```toml\nx = 1\n```\n# rest\n").as_deref(),
+            Some("x = 1\n")
+        );
+        assert_eq!(
+            extract_toml_block("```TOML\ny = 2\n```").as_deref(),
+            Some("y = 2\n")
+        );
+    }
+
+    #[test]
+    fn extract_toml_block_returns_none_when_no_fence() {
+        assert_eq!(extract_toml_block("# pure markdown\nno toml here"), None);
     }
 
     #[test]

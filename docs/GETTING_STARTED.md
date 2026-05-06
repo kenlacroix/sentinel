@@ -1,7 +1,7 @@
 # Getting started with Sentinel
 
 This guide walks through installing Sentinel from source, running your first
-cartographer scan, and wiring up a fuzz target for the IPC fuzzer.
+unified scan, and wiring up the analyzer + fuzzer for deeper coverage.
 
 ## Prerequisites
 
@@ -9,6 +9,14 @@ cartographer scan, and wiring up a fuzz target for the IPC fuzzer.
 - A C toolchain (`build-essential` on Debian/Ubuntu, Xcode CLT on macOS, MSVC
   on Windows)
 - `tar` available on your `$PATH` (used to unpack the RustSec advisory archive)
+
+Optional, for the fuzzer:
+
+- nightly Rust toolchain — `rustup toolchain install nightly`
+- `cargo-fuzz` — `cargo install cargo-fuzz`
+
+Run `cargo run -p sentinel -- doctor` once installed to confirm everything
+is wired up.
 
 ## Build
 
@@ -18,9 +26,44 @@ cd sentinel
 cargo build --release
 ```
 
-The cartographer binary lands at `target/release/sentinel-cartographer`.
+The unified `sentinel` binary lands at `target/release/sentinel`. The
+standalone tool binaries (`sentinel-cartographer`, `sentinel-analyzer`,
+`sentinel-fuzzer`) ship alongside it for users who want one capability
+without the rest.
 
-## First scan
+## First scan — unified
+
+```bash
+cargo run -p sentinel -- scan /path/to/your/tauri/project
+```
+
+This runs the cartographer (dependency CVEs + Tauri config audit) and the
+analyzer (Tauri-aware static analysis) and merges every finding into one
+report. The fuzzer is opt-in via `--fuzz <target>` because it needs nightly.
+
+By default the cartographer downloads the RustSec advisory database into
+`~/.sentinel/advisory-db/` on the first run. Subsequent scans reuse the
+cache for 24 hours.
+
+### Useful flags
+
+```bash
+sentinel scan ./project --no-advisories          # skip CVE matching, faster + offline
+sentinel scan ./project --refresh-advisories     # force CVE cache refresh
+sentinel scan ./project --no-cartographer        # analyzer-only run
+sentinel scan ./project --no-analyzer            # cartographer-only run
+sentinel scan ./project --fuzz store_mood --duration 60
+sentinel scan ./project --format json -o report.json
+sentinel scan ./project --format html -o report.html
+```
+
+The unified scan exits non-zero when any High or Critical finding appears,
+so it works directly as a CI gate.
+
+## Standalone tool — cartographer only
+
+If you want just the cartographer (older docs and CI configs may reference
+this form):
 
 ```bash
 cargo run -p sentinel-cartographer -- /path/to/your/tauri/project

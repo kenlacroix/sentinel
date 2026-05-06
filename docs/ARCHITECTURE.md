@@ -1,24 +1,53 @@
 # Sentinel architecture
 
-Sentinel is a Cargo workspace of four crates that emit and consume a shared
-`Report` type defined in `sentinel-core`.
+Sentinel is a Cargo workspace of five crates plus a unified CLI binary.
+Every tool emits the same `Report` type defined in `sentinel-core`, and the
+unified `sentinel` binary composes them into one merged scan.
 
 ```
-                         ┌──────────────────┐
-                         │  sentinel-core   │
-                         │  Report types    │
-                         └────────▲─────────┘
-                                  │
-       ┌──────────────────────────┼──────────────────────────┐
-       │                          │                          │
-┌──────┴───────┐         ┌────────┴────────┐         ┌───────┴────────┐
-│ cartographer │         │     fuzzer      │         │    analyzer    │
-│ deps + CVEs  │         │  IPC mutation   │         │  patterns/AST  │
-└──────┬───────┘         └─────────────────┘         └────────────────┘
-       │
-       ▼
-~/.sentinel/advisory-db   (cached RustSec advisories)
+                                       ┌──────────────────┐
+                                       │  sentinel-core   │
+                                       │  Report + types  │
+                                       └────────▲─────────┘
+                                                │
+                  ┌─────────────────────────────┼─────────────────────────────┐
+                  │                             │                             │
+           ┌──────┴───────┐             ┌───────┴────────┐             ┌──────┴───────┐
+           │ cartographer │             │    analyzer    │             │    fuzzer    │
+           │ deps + CVEs  │             │ patterns +     │             │ cargo-fuzz + │
+           │ Tauri config │             │ Tauri dataflow │             │ tauri::test  │
+           └──────┬───────┘             └────────┬───────┘             └──────┬───────┘
+                  │                              │                            │
+                  └──────────────┬───────────────┴────────────┬───────────────┘
+                                 │                            │
+                          ┌──────┴───────┐             ┌──────┴───────┐
+                          │   sentinel   │             │  standalone  │
+                          │  unified CLI │             │   binaries   │
+                          │ scan + doctor│             │ (one-tool)   │
+                          └──────┬───────┘             └──────────────┘
+                                 │
+                                 ▼
+              ~/.sentinel/advisory-db   (cached RustSec advisories)
 ```
+
+## Crates
+
+### `sentinel`
+
+Umbrella crate that produces the `sentinel` binary. Pulls every sub-crate
+as a library dependency and exposes two subcommands:
+
+- `sentinel scan <project>` — runs cartographer + analyzer + (optional)
+  fuzzer in sequence, merges the per-tool findings into one
+  `sentinel_core::Report` (each finding tagged with its `Tool`), and
+  renders text / JSON / HTML.
+- `sentinel doctor` — checks `rustc`, `cargo`, `cargo-fuzz`, the nightly
+  toolchain, and `tar`, and prints concrete install hints for anything
+  missing.
+
+The unified scan never aborts the whole run on a single tool failure;
+each tool's status is captured in `ScanOutcome::cartographer`,
+`::analyzer`, and `::fuzz_targets` and surfaced in the rendered report.
 
 ## Crates
 

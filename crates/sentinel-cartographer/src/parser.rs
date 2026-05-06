@@ -75,6 +75,11 @@ pub struct ParsedProject {
     pub tauri: Option<TauriManifest>,
     /// Manifest paths we read, relative to `root`.
     pub manifest_paths: Vec<PathBuf>,
+    /// Resolved versions per crate, parsed from `Cargo.lock`. A crate may
+    /// resolve to multiple versions when transitive dependencies pin
+    /// incompatible majors. Empty when no `Cargo.lock` was found.
+    #[serde(default)]
+    pub resolved_versions: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Walk `root`, parsing every `Cargo.toml` and `tauri.conf.json` we find.
@@ -96,6 +101,8 @@ pub fn parse_project(root: &Path) -> Result<ParsedProject> {
     let mut app_name: Option<String> = None;
     let mut crate_version: Option<String> = None;
     let mut tauri: Option<TauriManifest> = None;
+    let mut resolved_versions: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
 
     for entry in WalkDir::new(&root)
         .max_depth(MAX_SCAN_DEPTH)
@@ -127,6 +134,25 @@ pub fn parse_project(root: &Path) -> Result<ParsedProject> {
                 deps.extend(parsed.dependencies);
                 manifest_paths.push(relativize(&root, path));
             }
+            "Cargo.lock" => {
+                let raw = std::fs::read_to_string(path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                match parse_cargo_lock(&raw) {
+                    Ok(versions) => {
+                        for (name, version) in versions {
+                            resolved_versions.entry(name).or_default().push(version);
+                        }
+                        manifest_paths.push(relativize(&root, path));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "skip malformed Cargo.lock"
+                        );
+                    }
+                }
+            }
             "tauri.conf.json" | "tauri.conf.json5" => {
                 let raw = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
@@ -149,6 +175,10 @@ pub fn parse_project(root: &Path) -> Result<ParsedProject> {
 
     deps.sort_by(|a, b| a.name.cmp(&b.name).then(a.kind.cmp_kind(b.kind)));
     deps.dedup_by(|a, b| a.name == b.name && a.version_req == b.version_req && a.kind == b.kind);
+    for versions in resolved_versions.values_mut() {
+        versions.sort();
+        versions.dedup();
+    }
 
     Ok(ParsedProject {
         root: root.clone(),
@@ -157,7 +187,41 @@ pub fn parse_project(root: &Path) -> Result<ParsedProject> {
         dependencies: deps,
         tauri,
         manifest_paths,
+        resolved_versions,
     })
+}
+
+/// Parse a `Cargo.lock` and return `(crate_name, resolved_version)` pairs.
+///
+/// A single crate may appear multiple times when the resolver produces
+/// multiple major versions in the dep graph (e.g. tokio 0.2 and 1.x both
+/// pulled in transitively). The caller is responsible for deduplicating /
+/// aggregating; we return them in source order to stay decisive about
+/// data loss.
+///
+/// # Errors
+///
+/// Returns an error if the input is not valid TOML.
+pub fn parse_cargo_lock(raw: &str) -> Result<Vec<(String, String)>> {
+    use toml::Value;
+    let value: Value = toml::from_str(raw).context("not valid TOML")?;
+    let mut out = Vec::new();
+    let Some(packages) = value.get("package").and_then(Value::as_array) else {
+        return Ok(out);
+    };
+    for pkg in packages {
+        let Some(table) = pkg.as_table() else {
+            continue;
+        };
+        let Some(name) = table.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(version) = table.get("version").and_then(Value::as_str) else {
+            continue;
+        };
+        out.push((name.to_string(), version.to_string()));
+    }
+    Ok(out)
 }
 
 /// Parsed representation of a single `Cargo.toml` file.
@@ -491,6 +555,58 @@ mod tests {
         assert!(m.allowlist.contains(&"fs.readFile".to_string()));
         assert!(m.allowlist.contains(&"shell.open".to_string()));
         assert!(!m.allowlist.contains(&"fs.writeFile".to_string()));
+    }
+
+    #[test]
+    fn parse_cargo_lock_returns_resolved_versions() {
+        let raw = r#"
+version = 4
+
+[[package]]
+name = "base64"
+version = "0.21.7"
+
+[[package]]
+name = "tokio"
+version = "1.38.0"
+
+[[package]]
+name = "tokio"
+version = "0.2.25"
+
+[[package]]
+name = "no-version"
+"#;
+        let pairs = parse_cargo_lock(raw).unwrap();
+        assert!(pairs.contains(&("base64".to_string(), "0.21.7".to_string())));
+        assert!(pairs.contains(&("tokio".to_string(), "1.38.0".to_string())));
+        assert!(pairs.contains(&("tokio".to_string(), "0.2.25".to_string())));
+        // The no-version entry has no version field; it should be silently skipped.
+        assert!(!pairs.iter().any(|(n, _)| n == "no-version"));
+    }
+
+    #[test]
+    fn parse_project_picks_up_lockfile_resolutions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n[dependencies]\nbase64 = \"0.21\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            root.join("Cargo.lock"),
+            "[[package]]\nname = \"base64\"\nversion = \"0.21.7\"\n",
+        )
+        .unwrap();
+
+        let parsed = parse_project(root).unwrap();
+        assert_eq!(
+            parsed.resolved_versions.get("base64"),
+            Some(&vec!["0.21.7".to_string()])
+        );
     }
 
     #[test]

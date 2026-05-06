@@ -45,24 +45,52 @@ pub fn cartograph(opts: CartographOptions<'_>) -> Result<Report> {
 }
 
 fn advisory_findings(project: &ParsedProject, store: &AdvisoryStore) -> Vec<Finding> {
+    // Match against resolved versions from Cargo.lock when available — that
+    // is the actual version the project ships. Fall back to the
+    // requirement string from Cargo.toml only when no lockfile resolution
+    // exists (in which case the matcher's conservative behaviour over-reports).
+    //
+    // Why this matters: requirement strings like "1.0" don't parse as
+    // semver, which trips the matcher's "if I can't parse it, treat as
+    // potentially affected" fallback and produces decades of stale CVE
+    // findings. Resolved versions like "1.0.5" parse cleanly and produce
+    // precise matches.
     let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+
     for dep in &project.dependencies {
-        let Some(req) = dep.version_req.as_deref() else {
-            continue;
+        let resolved = project.resolved_versions.get(&dep.name);
+        let lookup_versions: Vec<String> = match resolved {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => match dep.version_req.as_deref() {
+                Some(req) => vec![strip_caret(req).to_string()],
+                None => continue,
+            },
         };
-        let lookup_version = strip_caret(req);
-        for adv in store.matches(&dep.name, lookup_version) {
-            out.push(advisory_to_finding(adv, dep, &project.app_name));
+
+        for version in &lookup_versions {
+            for adv in store.matches(&dep.name, version) {
+                let key = (adv.id.clone(), dep.name.clone());
+                if !seen.insert(key) {
+                    continue;
+                }
+                out.push(advisory_to_finding(adv, dep, version, &project.app_name));
+            }
         }
     }
     out
 }
 
-fn advisory_to_finding(adv: &Advisory, dep: &crate::parser::Dependency, _app: &str) -> Finding {
+fn advisory_to_finding(
+    adv: &Advisory,
+    dep: &crate::parser::Dependency,
+    matched_version: &str,
+    _app: &str,
+) -> Finding {
     Finding {
         id: format!("cartographer.cve.{}", adv.id),
         title: format!("{}: {}", adv.id, adv.title),
-        description: build_advisory_description(adv, dep),
+        description: build_advisory_description(adv, dep, matched_version),
         severity: severity_from_advisory(adv),
         tool: Tool::Cartographer,
         component: format!("dep:{}", dep.name),
@@ -77,10 +105,15 @@ fn advisory_to_finding(adv: &Advisory, dep: &crate::parser::Dependency, _app: &s
     }
 }
 
-fn build_advisory_description(adv: &Advisory, dep: &crate::parser::Dependency) -> String {
+fn build_advisory_description(
+    adv: &Advisory,
+    dep: &crate::parser::Dependency,
+    matched_version: &str,
+) -> String {
     let mut s = format!(
-        "Dependency `{}` (version requirement `{}`) is referenced by advisory {}.",
+        "Dependency `{}` (resolved version `{}`, requirement `{}`) is referenced by advisory {}.",
         dep.name,
+        matched_version,
         dep.version_req.as_deref().unwrap_or("?"),
         adv.id,
     );
@@ -243,7 +276,16 @@ mod tests {
             }],
             tauri: None,
             manifest_paths: vec![std::path::PathBuf::from("Cargo.toml")],
+            resolved_versions: std::collections::HashMap::new(),
         }
+    }
+
+    fn make_project_with_resolved(name: &str, req: &str, resolved: &str) -> ParsedProject {
+        let mut project = make_project_with_dep(name, req);
+        project
+            .resolved_versions
+            .insert(name.to_string(), vec![resolved.to_string()]);
+        project
     }
 
     #[test]
@@ -275,6 +317,89 @@ mod tests {
         ));
         let findings = advisory_findings(&project, &store);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn resolved_version_takes_precedence_over_requirement_string() {
+        // Requirement "0.21" is what's in Cargo.toml. Cargo.lock resolves
+        // to 0.21.7. The advisory affects only versions < 0.5.2.
+        // Without lockfile resolution, "0.21" doesn't parse as semver and
+        // the matcher conservatively reports a finding (false positive).
+        // With lockfile resolution, "0.21.7" parses cleanly and is correctly
+        // recognised as patched.
+        let project = make_project_with_resolved("base64", "0.21", "0.21.7");
+        let mut store = AdvisoryStore::new();
+        store.insert(make_advisory(
+            "RUSTSEC-2017-0004",
+            "base64",
+            &[">=0.5.2"],
+            "high",
+        ));
+        let findings = advisory_findings(&project, &store);
+        assert!(
+            findings.is_empty(),
+            "0.21.7 is past the patched 0.5.2 — no finding expected, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_version_still_flags_truly_vulnerable_versions() {
+        // Same shape as above, but the resolved version is genuinely vulnerable.
+        let project = make_project_with_resolved("vuln-crate", "0.1", "0.1.0");
+        let mut store = AdvisoryStore::new();
+        store.insert(make_advisory(
+            "RUSTSEC-2024-0042",
+            "vuln-crate",
+            &[">=1.0.0"],
+            "critical",
+        ));
+        let findings = advisory_findings(&project, &store);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Critical);
+        assert!(
+            findings[0].description.contains("resolved version `0.1.0`"),
+            "description should expose the actual resolved version"
+        );
+    }
+
+    #[test]
+    fn fallback_to_requirement_string_when_no_lockfile_resolution() {
+        let project = make_project_with_dep("vuln-crate", "0.1.0");
+        let mut store = AdvisoryStore::new();
+        store.insert(make_advisory(
+            "RUSTSEC-2024-0001",
+            "vuln-crate",
+            &[">=1.0.0"],
+            "high",
+        ));
+        let findings = advisory_findings(&project, &store);
+        assert_eq!(
+            findings.len(),
+            1,
+            "should still detect when only requirement string available"
+        );
+    }
+
+    #[test]
+    fn duplicate_advisory_across_multiple_resolved_versions_is_deduped() {
+        let mut project = make_project_with_dep("vuln-crate", "*");
+        project.resolved_versions.insert(
+            "vuln-crate".to_string(),
+            vec!["0.1.0".to_string(), "0.2.0".to_string()],
+        );
+        let mut store = AdvisoryStore::new();
+        store.insert(make_advisory(
+            "RUSTSEC-2024-0001",
+            "vuln-crate",
+            &[">=1.0.0"],
+            "high",
+        ));
+        let findings = advisory_findings(&project, &store);
+        assert_eq!(
+            findings.len(),
+            1,
+            "same advisory, different resolved versions → one finding"
+        );
     }
 
     #[test]

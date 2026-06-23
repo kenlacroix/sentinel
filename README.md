@@ -38,3 +38,7 @@ who want one capability without the rest. See [`docs/GETTING_STARTED.md`](docs/G
 ## License
 
 MIT
+
+---
+
+Built by [Kenneth LaCroix](https://kennethlacroix.me)
